@@ -1,13 +1,13 @@
 /* 
- * Amarisoft Transceiver API version 2018-10-18
- * Copyright (C) 2013-2018 Amarisoft
+ * Amarisoft Transceiver API version 2020-01-23
+ * Copyright (C) 2013-2020 Amarisoft
  */
 #ifndef TRX_DRIVER_H
 #define TRX_DRIVER_H
 
 #include <inttypes.h>
 
-#define TRX_API_VERSION 13
+#define TRX_API_VERSION 15
 
 #define TRX_MAX_CHANNELS 16
 #define TRX_MAX_RF_PORT  TRX_MAX_CHANNELS
@@ -30,8 +30,8 @@ typedef struct {
 typedef struct {
 
     int         rf_port_index;
-    uint32_t    dl_earfcn;
-    uint32_t    ul_earfcn;
+    uint32_t    dl_earfcn;  /* aka arfcn for NR */
+    uint32_t    ul_earfcn;  /* aka arfcn for NR */
     int         n_rb_dl;
     int         n_rb_ul;
 
@@ -44,6 +44,9 @@ typedef struct {
         TRX_CELL_TYPE_FDD,
         TRX_CELL_TYPE_TDD,
         TRX_NBCELL_TYPE_FDD,
+        TRX_NBCELL_TYPE_TDD, /* Not available */
+        TRX_NRCELL_TYPE_FDD,
+        TRX_NRCELL_TYPE_TDD,
     } type;
 
     union {
@@ -51,6 +54,25 @@ typedef struct {
             uint8_t uldl_config;
             uint8_t special_subframe_config;
         } tdd;
+        struct {
+            int band;
+            int dl_subcarrier_spacing; /* mu: [0..3] */
+            int ul_subcarrier_spacing; /* mu: [0..3] */
+        } nr_fdd;
+        struct {
+            int band;
+            int dl_subcarrier_spacing; /* mu: [0..3] */
+            int ul_subcarrier_spacing; /* mu: [0..3] */
+
+            /* TDD */
+            uint8_t period_asn1;
+            uint8_t dl_slots;
+            uint8_t dl_symbs;
+            uint8_t ul_slots;
+            uint8_t ul_symbs;
+        } nr_tdd;
+
+        uint64_t pad[32];
     } u;
 
 } TRXCellInfo;
@@ -72,7 +94,7 @@ typedef struct {
     int rx_bandwidth[TRX_MAX_CHANNELS];
     /* TX bandwidth, in Hz for each channel */
     int tx_bandwidth[TRX_MAX_CHANNELS];
-    
+
     /* Number of RF ports.
      * A separate trx_write() is be done for each TX port on different thread.
      * Each TX port can have a different TDD configuration.
@@ -159,6 +181,32 @@ typedef struct {
 #define TRX_WRITE_FLAG_END_OF_BURST         TRX_WRITE_MD_FLAG_END_OF_BURST
 
 
+typedef struct TRXMsg TRXMsg;
+struct TRXMsg {
+    void *opaque;
+
+    /* Message in API
+     * Only used for received messages
+     */
+    int (*get_double)(TRXMsg *msg, double *pval, const char *prop_name);
+    int (*get_string)(TRXMsg *msg, const char **pval, const char *prop_name);
+
+    /* Message out API */
+    void (*set_double)(TRXMsg *msg, const char *prop_name, double val);
+    void (*set_string)(TRXMsg *msg, const char *prop_name, const char *string);
+
+    /* Always call this once, even in timeout_cb */
+    void (*send)(TRXMsg *msg);
+
+    /* Async handling
+     * Only used for received messages
+     */
+    void (*set_timeout)(TRXMsg *msg, void (*timeout_cb)(TRXMsg*), int timeout_ms);
+
+    /* User defined data */
+    void *user_data;
+};
+
 
 struct TRXState {
     /* API version */
@@ -169,7 +217,7 @@ struct TRXState {
     /* set by the application - do not modify */
     char *(*trx_get_param_string)(void *app_opaque, const char *prop_name);
     /* set by the application - do not modify */
-    int (*trx_get_param_double)(void *app_opaque, double *pval, 
+    int (*trx_get_param_double)(void *app_opaque, double *pval,
                                 const char *prop_name);
 
     /* set by the application - do not modify */
@@ -215,7 +263,7 @@ struct TRXState {
        Read 'count' samples from each channel. samples[0] is the array
        for the first channel. *ptimestamp is the time at which the
        first samples was received. Return the number of sample read
-       (=count). 
+       (=count).
 
        Note: It is explicitely allowed that the application calls
        trx_write_func, trx_read_func, trx_set_tx_gain_func and
@@ -224,7 +272,7 @@ struct TRXState {
     int (*trx_read_func)(TRXState *s, trx_timestamp_t *ptimestamp, void **samples, int count, int rx_port_index);
 
     /* Dynamic set the transmit gain (in dB). The origin and range are
-       driver dependent. 
+       driver dependent.
 
        Note: this function is only used for user supplied dynamic
        adjustements.
@@ -232,7 +280,7 @@ struct TRXState {
     void (*trx_set_tx_gain_func)(TRXState *s, double gain, int channel_num);
 
     /* Dynamic set the receive gain (in dB). The origin and range are
-       driver dependent. 
+       driver dependent.
 
        Note: this function is only used for user supplied dynamic
        adjustements.
@@ -258,7 +306,7 @@ struct TRXState {
        amplitude. This function can be called from any thread and
        needs to be fast. Return 0 if OK, -1 if the result is not
        available. */
-    int (*trx_get_abs_tx_power_func)(TRXState *s, 
+    int (*trx_get_abs_tx_power_func)(TRXState *s,
                                      float *presult, int channel_num);
 
     /* Return the absolute RX power in dBm for the RX channel
@@ -266,7 +314,7 @@ struct TRXState {
        amplitude. This function can be called from any thread and
        needs to be fast. Return 0 if OK, -1 if the result is not
        available. */
-    int (*trx_get_abs_rx_power_func)(TRXState *s, 
+    int (*trx_get_abs_rx_power_func)(TRXState *s,
                                      float *presult, int channel_num);
 
     /* Read/Write IQ samples
@@ -276,6 +324,15 @@ struct TRXState {
                             int count, int tx_port_index, TRXWriteMetadata *md);
     int (*trx_read_func2)(TRXState *s, trx_timestamp_t *ptimestamp, void **samples, int count,
                           int rx_port_index, TRXReadMetadata *md);
+
+    /* Remote API communication
+     * Available since API v14
+     * trx_msg_recv_func: called for each trx received messages
+     * trx_msg_send_func: call it to send trx messages (They must be registered by client)
+     * For each message, a call to send API must be done
+     */
+    void (*trx_msg_recv_func)(TRXState *s, TRXMsg *msg);
+    TRXMsg* (*trx_msg_send_func)(TRXState *s); /* set by application, do notmodify it */
 };
 
 /* return 0 if OK, < 0 if error. */
@@ -292,7 +349,7 @@ static inline char *trx_get_param_string(TRXState *s, const char *prop_name)
 /* Get floating point parameter from configuration. Must be freed with
    free(). Return 0 if OK or < 0 if property does not exists. Can only be called
    in trx_driver_init(). */
-static inline int trx_get_param_double(TRXState *s, double *pval, 
+static inline int trx_get_param_double(TRXState *s, double *pval,
                                        const char *prop_name)
 {
     return s->trx_get_param_double(s->app_opaque, pval, prop_name);
